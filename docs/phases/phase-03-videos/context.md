@@ -7,6 +7,7 @@ sources_mtime:
   docs/phases/phase-01-configuracao-base/context.md: "2026-07-19T18:23:37-03:00"
   docs/phases/phase-02-auth/context.md: "2026-07-19T18:23:37-03:00"
   .claude/skills/testing-guide-nestjs-project/SKILL.md: "2026-07-19T18:23:37-03:00"
+  docs/phases/phase-03-videos/library-refs.md: "2026-07-19T22:59:24-03:00"
 ---
 
 # phase-03-videos — Context

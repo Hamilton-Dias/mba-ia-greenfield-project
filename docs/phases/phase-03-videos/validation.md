@@ -6,6 +6,7 @@ issue_count: 0
 sources_mtime:
   docs/phases/phase-03-videos/context.md: "2026-07-19T22:43:21-03:00"
   docs/decisions/technical-decisions-phase-03-videos.md: "2026-07-19T22:41:52-03:00"
+  docs/phases/phase-03-videos/library-refs.md: "2026-07-19T22:59:24-03:00"
 issues:
   - id: IC-1
     status: resolved

@@ -3,7 +3,7 @@ kind: phase
 name: phase-03-videos
 sources_mtime:
   docs/project-plan.md: "2026-07-19T18:23:37-03:00"
-  docs/decisions/technical-decisions-phase-03-videos.md: "2026-07-19T18:55:00-03:00"
+  docs/decisions/technical-decisions-phase-03-videos.md: "2026-07-19T19:11:11-03:00"
   docs/phases/phase-01-configuracao-base/context.md: "2026-07-19T18:23:37-03:00"
   docs/phases/phase-02-auth/context.md: "2026-07-19T18:23:37-03:00"
   .claude/skills/testing-guide-nestjs-project/SKILL.md: "2026-07-19T18:23:37-03:00"
@@ -54,6 +54,7 @@ sources_mtime:
 | phase-03-videos/TD-06 | technical-decisions-phase-03-videos.md | Backend | Media Inspection and Thumbnail Generation Tooling | decided | A (Direct `child_process`/`execa` invocation of `ffmpeg`/`ffprobe`) | `execa` |
 | phase-03-videos/TD-07 | technical-decisions-phase-03-videos.md | Backend | Unique Video URL/Identifier Strategy | decided | A (Reuse the UUID PK as the public identifier) | — |
 | phase-03-videos/TD-08 | technical-decisions-phase-03-videos.md | Backend | Streaming and Download Strategy | decided | A (Presigned GET URLs, direct client → storage, shared for streaming and download) | — |
+| phase-03-videos/TD-09 | technical-decisions-phase-03-videos.md | Backend | Object Storage Deployment and Endpoint Configuration | decided | A (MinIO as new `compose.yaml` service, dual-endpoint configuration) | — |
 
 _Source files:_
 
@@ -63,7 +64,7 @@ _Source files:_
 
 | Capability (from project-plan.md) | Covered by |
 |-----------------------------------|------------|
-| Serviço de armazenamento de arquivos (vídeos e thumbnails) | phase-03-videos/TD-03 |
+| Serviço de armazenamento de arquivos (vídeos e thumbnails) | phase-03-videos/TD-03, phase-03-videos/TD-09 |
 | Serviço de processamento em segundo plano (filas) | phase-03-videos/TD-01, phase-03-videos/TD-05 |
 | Upload de vídeos com suporte a arquivos de até 10GB sem impacto na performance | phase-03-videos/TD-02 |
 | Pré-cadastro automático do vídeo como rascunho ao iniciar o upload | phase-03-videos/TD-04 |
@@ -95,7 +96,7 @@ _Source files:_
 
 ### phase-03-videos/TD-04
 
-**Recommendation:** Single `status` enum column, no separate history table — it maps directly onto the phase's literal requirement (draft → automatic processing → terminal state) with the least machinery. An audit-trail table is reasonable future work once a moderation/admin UI actually needs it (candidate for Fase 04's management panel), but nothing in this phase's capabilities asks for processing history, so building it now is scope the phase does not require. An enum keeps invalid state combinations impossible by construction.
+**Recommendation:** Single `status` enum column, no separate history table — it maps directly onto the phase's literal requirement (draft → automatic processing → terminal state) with the least machinery. An audit-trail table is reasonable future work once a moderation/admin UI actually needs it (candidate for Fase 04's management panel), but nothing in this phase's capabilities asks for processing history, so building it now is scope the phase does not require. An enum keeps invalid state combinations impossible by construction. **Draft→processing trigger:** because TD-02 keeps upload bytes entirely out of the API's request path, the API has no inherent signal that the upload finished — the trigger is a client call to a dedicated completion endpoint (e.g. `POST /videos/:id/complete-upload`), which verifies the object actually exists in storage (a `HeadObject`-equivalent call against the TD-03 key) before flipping `draft` → `processing` and enqueueing the TD-01 job; the API does not rely on a storage-side webhook/bucket-notification to detect completion.
 
 **Libraries:** —
 
@@ -107,7 +108,7 @@ _Source files:_
 
 ### phase-03-videos/TD-06
 
-**Recommendation:** Direct `child_process`/`execa` invocation of `ffmpeg`/`ffprobe` — with `fluent-ffmpeg` confirmed archived and its proposed successor too new to trust for a core pipeline, the most durable choice is to depend on ffmpeg/ffprobe's own CLI contract (pinned explicitly in the worker's Dockerfile) rather than on any third-party wrapper's maintenance continuing. `execa` (or plain `child_process`) adds negligible boilerplate for parsing `ffprobe`'s JSON output and constructing `ffmpeg` flag arrays, in exchange for zero wrapper-abandonment risk.
+**Recommendation:** Direct `child_process`/`execa` invocation of `ffmpeg`/`ffprobe` — with `fluent-ffmpeg` confirmed archived and its proposed successor too new to trust for a core pipeline, the most durable choice is to depend on ffmpeg/ffprobe's own CLI contract (pinned explicitly in the worker's Dockerfile) rather than on any third-party wrapper's maintenance continuing. `execa` (or plain `child_process`) adds negligible boilerplate for parsing `ffprobe`'s JSON output and constructing `ffmpeg` flag arrays, in exchange for zero wrapper-abandonment risk. **Thumbnail frame offset:** the worker captures the frame at a fixed offset of 3 seconds into the video (`ffmpeg -ss 3 -i <input> -vframes 1 <thumbnail.jpg>`), computed after `ffprobe` has already reported duration/metadata — a fixed offset avoids a data dependency on `ffprobe`'s output that a percentage-of-duration offset would require, and 3 seconds reliably skips black/fade-in frames while still landing early. **Fallback/clamp:** if the probed duration is shorter than 3 seconds, the worker captures at `0s` (the first frame) instead, so the seek never lands past end-of-stream for short clips.
 
 **Libraries:** `execa`
 
@@ -119,7 +120,13 @@ _Source files:_
 
 ### phase-03-videos/TD-08
 
-**Recommendation:** Presigned GET URLs, direct client → storage, shared for streaming and download — this is the only option consistent with the architecture diagram's explicit `Rel(frontend, storage, "Streams")` relation, and it gets `Range`-request support (essential for a scrubbable player) for free from the storage service rather than needing custom implementation. A CDN is legitimate future scaling work but isn't asked for by this phase or the current diagram.
+**Recommendation:** Presigned GET URLs, direct client → storage, shared for streaming and download — this is the only option consistent with the architecture diagram's explicit `Rel(frontend, storage, "Streams")` relation, and it gets `Range`-request support (essential for a scrubbable player) for free from the storage service rather than needing custom implementation. A CDN is legitimate future scaling work but isn't asked for by this phase or the current diagram. **Shared mechanism, distinguishing parameter:** streaming and download are two call sites against the same presigned `GetObjectCommand` operation, differing only in the `ResponseContentDisposition` parameter passed at signing time — the streaming URL is signed with no override (browser renders inline for the `<video>` element), while the download URL is signed with `ResponseContentDisposition: 'attachment; filename="<original-filename>"'`, instructing the browser to save the response to disk instead of playing it.
+
+**Libraries:** —
+
+### phase-03-videos/TD-09
+
+**Recommendation:** MinIO as a new `compose.yaml` service, with a dual-endpoint configuration — it is the only option that keeps the project's fully-local development loop intact (new infra added as its own Compose service, exactly like `mailpit`) while actually resolving the internal-vs-public hostname mismatch: presigned URLs must be signed against a host resolvable by an external client (browser or host-side script), which is fundamentally a different network address than the one the API/worker use for their own admin calls against the Compose-internal `minio` service. The API/worker hold two configured endpoint values — `STORAGE_INTERNAL_ENDPOINT` (e.g. `http://minio:9000`, Compose service DNS name) for admin/bucket-management operations, and `STORAGE_PUBLIC_ENDPOINT` (e.g. `http://localhost:9000`, host-mapped port) used only when constructing the `S3Client` that signs presigned URLs. Single-endpoint simplicity (Option B) does not survive contact with how container networking actually works (`localhost` inside a container is not the Docker host), and skipping local MinIO entirely (Option C) solves the problem only by giving up local-only development, which is disproportionate to what this phase needs.
 
 **Libraries:** —
 
@@ -221,7 +228,7 @@ _Source files:_
 - API errors are shaped by a single custom Domain Exception Filter as `{ statusCode, error, message }` with machine-readable domain error codes — new endpoints/services should throw domain exceptions and let the filter map them to HTTP responses, not throw NestJS HTTP exceptions directly. _(from phase 02)_
 - Request DTOs are validated via `class-validator` + `class-transformer` (`class-validator@^0.14.x`, `class-transformer@^0.5.x`) with the global `ValidationPipe`; DTO rules are proven via one E2E wiring test per endpoint, not per-rule unit tests. _(from phase 02)_
 - `@nestjs/throttler` is the established rate-limiting mechanism, scoped per-module via `APP_GUARD` with `@SkipThrottle()` for exemptions — available as the pattern for any new endpoint (e.g., upload initiation) that needs rate limiting. _(from phase 02)_
-- Auxiliary local-dev services (e.g. `mailpit` in Phase 02) are added to `compose.yaml` as their own service — the same pattern applies to new infrastructure this phase introduces (Redis for TD-01, the standalone worker container for TD-05). _(from phase 02)_
+- Auxiliary local-dev services (e.g. `mailpit` in Phase 02) are added to `compose.yaml` as their own service — the same pattern applies to new infrastructure this phase introduces (Redis for TD-01, the standalone worker container for TD-05, MinIO for TD-09). _(from phase 02)_
 
 ## Inherited Deferred Capabilities
 
@@ -264,4 +271,4 @@ _(from `testing-guide-nestjs-project` Skill § 3 — Feature Implementation Chec
 | Exception Filter | Unit + E2E |
 | Middleware | E2E |
 
-_Notes for this phase's artifact mix (not new rules — applying the table above): the video worker (TD-05) is a separate `createApplicationContext` bootstrap, not an HTTP surface — its BullMQ `@Processor` is a "Service with side-effect dep" (storage + ffmpeg) per the table, so cover it with Integration tests against a real/local adapter rather than E2E. Presigned-URL issuance (TD-02, TD-08) and the storage client are also side-effect-dependent services — same row applies. Race conditions called out in § 2 ("concurrent video uploads") are explicitly worth testing for this phase's upload/draft-creation path._
+_Notes for this phase's artifact mix (not new rules — applying the table above): the video worker (TD-05) is a separate `createApplicationContext` bootstrap, not an HTTP surface — its BullMQ `@Processor` is a "Service with side-effect dep" (storage + ffmpeg) per the table, so cover it with Integration tests against a real/local adapter rather than E2E. Presigned-URL issuance (TD-02, TD-08) and the storage client are also side-effect-dependent services — same row applies. The dual-endpoint storage client (TD-09) is itself a "Service with configured lib" / "Service with side-effect dep" — its internal-vs-public endpoint selection is a real configuration contract worth an Integration test against the local MinIO service, not a mock. Race conditions called out in § 2 ("concurrent video uploads") are explicitly worth testing for this phase's upload/draft-creation path._

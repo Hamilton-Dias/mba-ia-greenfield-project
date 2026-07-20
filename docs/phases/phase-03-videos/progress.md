@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 5/10 completed
+**SIs:** 6/10 completed
 
 ### SI-03.1 — Dependencies, Configuration Namespaces, and Docker Compose
 - **Status:** completed
@@ -64,3 +64,15 @@
   - **Found and fixed a real e2e flakiness bug, unrelated to this SI's endpoint logic but exposed by adding a 4th e2e spec file:** `npm run test:e2e` (`test/jest-e2e.json`) had no `--runInBand` and no `testTimeout` override, unlike the main `jest` config (which SI-03.3 already bumped to 15000ms for the same class of reason). Running e2e specs with default Jest worker parallelism against the one shared dev Postgres/MinIO/Redis stack caused intermittent `beforeAll` hook timeouts (default 5000ms) in `auth.e2e-spec.ts`, non-deterministically — reproduced twice, including once even with `--runInBand` alone (contention from a directly-preceding full-suite run). Fixed by adding `--runInBand` to the `test:e2e` npm script in `package.json` AND adding `"testTimeout": 15000` to `test/jest-e2e.json` (mirroring the main jest config's existing convention). Verified green on 4 consecutive `npm run test:e2e` runs after the fix, including immediately after a full 179-test unit/integration run.
   - `npx tsc --noEmit`: clean, 0 errors. `npx eslint "src/videos/**/*.ts" "src/channels/**/*.ts" "test/**/*.ts"`: all new/modified files this SI directly wrote (`videos.service.ts`, `videos.controller.ts`, `videos.module.ts`, `create-video.dto.ts`, `videos.service.spec.ts`, `videos.service.integration-spec.ts`, `videos.module.spec.ts`) are fully clean. Remaining reported errors are pre-existing, out of scope: `channels.service.ts`/`channels.service.spec.ts` carry a pre-existing `any`-typed-mock lint debt (confirmed by lint-checking the original pre-SI file content directly: 20 problems already present before this SI touched it) that this SI's `findByUserId` additions merely extend using the same established convention; `test/videos.e2e-spec.ts`'s `no-unsafe-member-access` errors on `res.body.*` mirror the exact same pre-existing, untouched pattern already present throughout `test/auth.e2e-spec.ts`.
   - Full suite (`npm test -- --runInBand`): **179/179 passing, 32/32 suites — fully green** (baseline 166/30 + this SI's 13 new tests across 2 new suites + additions to 2 existing suites). Full e2e suite (`npm run test:e2e`): **59/59 passing, 4/4 suites — fully green**.
+
+### SI-03.6 — Complete Upload Endpoint (POST /videos/:id/complete-upload)
+- **Status:** completed
+- **Tests:** videos-scoped run: 28/28 passing, 5/5 suites (extends `videos.service.spec.ts`, `videos.service.integration-spec.ts`, `test/videos.e2e-spec.ts` with completeUpload cases: multipart path, single-PUT path, ownership mismatch → 404, missing video → 404, storage not-found → 409).
+- **Observations:**
+  - `UploadVerificationFailedException` added alongside `VideoNotFoundException`, same `DomainException` base pattern, `errorCode: 'UPLOAD_VERIFICATION_FAILED'`, `httpStatus: 409`.
+  - Ownership mismatch and "video not found" both throw `VideoNotFoundException` uniformly (no distinct 403) — deliberate per TD-04's IDOR-by-construction design.
+  - Multipart completion (`dto.uploadId` present) calls `storageService.completeMultipartUpload` — its success is the existence proof, no follow-up `headObject` call. Single-PUT completion (`dto.uploadId` absent) calls `storageService.headObject`, converting a not-found into `UploadVerificationFailedException`.
+  - `QueueModule` imported into `videos.module.ts` so `VideosService` can inject `VideoQueueService` and enqueue the `process-video` job on successful completion.
+  - E2E suite (`npm run test:e2e`): **62/62 passing, 4/4 suites** (baseline 59 + 3 new complete-upload e2e tests) — verified directly by the orchestrator, not just self-reported.
+  - Full suite (`npm test -- --runInBand`): **190/190 passing, 32/32 suites — fully green** (baseline 179 + 11 new tests across existing suites, zero new suites since this SI only extends `videos.*` files) — verified directly by the orchestrator.
+  - `npx tsc --noEmit`: clean, 0 errors (verified directly). `npx eslint "src/videos/**/*.ts" "test/**/*.ts"`: 72 pre-existing problems reported, entirely in `test/auth.e2e-spec.ts` (all pre-existing, untouched by this SI) and the same `no-unsafe-member-access` pattern on `res.body.*` in `test/videos.e2e-spec.ts` that SI-03.5 already noted mirrors `auth.e2e-spec.ts`'s established (uncorrected) convention — zero new lint debt introduced by this SI's own additions to that file, confirmed the pattern is identical to what SI-03.5 already flagged as deferred to the phase's final DoD lint sweep.

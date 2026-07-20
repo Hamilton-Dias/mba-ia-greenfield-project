@@ -1,8 +1,13 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, HttpCode, Param, Post } from '@nestjs/common';
 import type { JwtPayload } from '../auth/auth.types';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { CompleteUploadDto } from './dto/complete-upload.dto';
 import { CreateVideoDto } from './dto/create-video.dto';
-import { CreateDraftResult, VideosService } from './videos.service';
+import {
+  CompleteUploadResult,
+  CreateDraftResult,
+  VideosService,
+} from './videos.service';
 
 @Controller('videos')
 export class VideosController {
@@ -14,5 +19,15 @@ export class VideosController {
     @Body() dto: CreateVideoDto,
   ): Promise<CreateDraftResult> {
     return this.videosService.createDraft(user.sub, dto);
+  }
+
+  @Post(':id/complete-upload')
+  @HttpCode(200)
+  async completeUpload(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Body() dto: CompleteUploadDto,
+  ): Promise<CompleteUploadResult> {
+    return this.videosService.completeUpload(user.sub, id, dto);
   }
 }

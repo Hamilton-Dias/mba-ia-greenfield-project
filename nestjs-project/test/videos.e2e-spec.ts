@@ -7,6 +7,7 @@ import { AppModule } from '../src/app.module';
 import { AuthService } from '../src/auth/auth.service';
 import { DomainExceptionFilter } from '../src/common/filters/domain-exception.filter';
 import { ValidationExceptionFilter } from '../src/common/filters/validation-exception.filter';
+import { StorageService } from '../src/storage/storage.service';
 import { cleanAllTables } from '../src/test/create-test-data-source';
 
 describe('Videos (e2e)', () => {
@@ -37,6 +38,13 @@ describe('Videos (e2e)', () => {
   }, 30000);
 
   afterAll(async () => {
+    // Leave no `videos` rows behind — other e2e spec files share this same
+    // live Postgres instance and their own `cleanAllTables()` does a plain
+    // `DELETE FROM "channels"`, which fails on the FK from `videos.channelId`
+    // if this file's rows (created by tests that don't run through the
+    // per-test beforeEach cleanup below, i.e. whatever the last test left)
+    // are still present when a later suite runs against the same database.
+    await dataSource.query('DELETE FROM "videos"');
     await app.close();
   });
 
@@ -166,6 +174,82 @@ describe('Videos (e2e)', () => {
         .expect(400);
 
       expect(res.body.error).toBe('VALIDATION_ERROR');
+    });
+  });
+
+  describe('POST /videos/:id/complete-upload', () => {
+    async function createDraftVideo(
+      accessToken: string,
+      fileSize = 1024,
+    ): Promise<{ id: string; storageKey: string }> {
+      const res = await request(app.getHttpServer())
+        .post('/videos')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({ originalFilename: 'my-video.mp4', fileSize })
+        .expect(201);
+      const id = res.body.id as string;
+      return { id, storageKey: `videos/${id}/original` };
+    }
+
+    // The three cases below share a single registerConfirmAndLogin() call
+    // (rather than one per `it`) to stay well under the app's global
+    // ThrottlerGuard (10 req/60s per IP+route, see auth.module.ts) — this
+    // file alone already burns ~6 registrations in the POST /videos describe
+    // above, and `beforeEach` wipes users/channels before every test so a
+    // shared user can't be hoisted into a `beforeAll` either.
+    it('returns 200 for the owner, 404 for an unknown id, and 409 when never uploaded', async () => {
+      const accessToken = await registerConfirmAndLogin();
+
+      // 200: genuine upload really lands in storage, then verified.
+      const { id, storageKey } = await createDraftVideo(accessToken);
+      const storageService = app.get(StorageService);
+      await storageService.putObject(storageKey, Buffer.from('real content'));
+
+      const okRes = await request(app.getHttpServer())
+        .post(`/videos/${id}/complete-upload`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({})
+        .expect(200);
+      expect(okRes.body).toEqual({ id, status: 'processing' });
+
+      // 404: no video exists with this id at all.
+      const notFoundRes = await request(app.getHttpServer())
+        .post('/videos/00000000-0000-0000-0000-000000000000/complete-upload')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({})
+        .expect(404);
+      expect(notFoundRes.body.error).toBe('VIDEO_NOT_FOUND');
+
+      // 409: a fresh draft whose storage object was never actually uploaded.
+      const { id: neverUploadedId } = await createDraftVideo(accessToken);
+      const verificationRes = await request(app.getHttpServer())
+        .post(`/videos/${neverUploadedId}/complete-upload`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({})
+        .expect(409);
+      expect(verificationRes.body.error).toBe('UPLOAD_VERIFICATION_FAILED');
+    }, 20000);
+
+    it('returns 401 without an Authorization header', async () => {
+      await request(app.getHttpServer())
+        .post('/videos/00000000-0000-0000-0000-000000000000/complete-upload')
+        .send({})
+        .expect(401);
+    });
+
+    it("returns 404 VIDEO_NOT_FOUND for another user's video", async () => {
+      const ownerToken = await registerConfirmAndLogin();
+      const { id } = await createDraftVideo(ownerToken);
+
+      const otherToken = await registerConfirmAndLogin();
+
+      const res = await request(app.getHttpServer())
+        .post(`/videos/${id}/complete-upload`)
+        .set('Authorization', `Bearer ${otherToken}`)
+        .send({})
+        .expect(404);
+
+      expect(res.body.error).toBe('VIDEO_NOT_FOUND');
     });
   });
 });

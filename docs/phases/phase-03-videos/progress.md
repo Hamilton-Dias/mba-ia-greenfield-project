@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 3/10 completed
+**SIs:** 4/10 completed
 
 ### SI-03.1 — Dependencies, Configuration Namespaces, and Docker Compose
 - **Status:** completed
@@ -40,3 +40,14 @@
     2. `src/config/env.validation.integration-spec.ts` — the `SWAGGER_ENABLED` test group's `requiredEnv` fixture was missing the newly-required `STORAGE_INTERNAL_ENDPOINT`/`STORAGE_ACCESS_KEY`/`STORAGE_SECRET_KEY` fields (regression from SI-03.1's Joi schema change); added them to the fixture.
   - Also bumped Jest's global `testTimeout` from the 5000ms default to 15000ms (`package.json`'s `jest` config) — under load, `AuthService`'s integration `beforeAll` (compiles a full Nest testing module + opens a live DB connection) was intermittently exceeding the default hook timeout, unrelated to any logic bug; integration tests hitting real Postgres/MinIO/Redis warrant a more generous budget than unit tests.
   - Full suite after all fixes: **163/163 passing, 28/28 suites — fully green**, no known failures remaining. `npx tsc --noEmit`: clean. `npx eslint` on all files touched this SI: clean (the pre-existing project-wide `Function` type lint error in `src/test/create-test-data-source.ts` predates this SI untouched — confirmed via `git diff` showing zero changes to that file's committed content — deferred to the phase's final DoD lint sweep).
+
+### SI-03.4 — Queue Module (BullMQ Registration and Producer)
+- **Status:** completed
+- **Tests:** 3 passing (2 files: `video-queue.service.spec.ts`, `queue.module.spec.ts`)
+- **Observations:**
+  - Wired `queueConfig` into `AppModule`'s `ConfigModule.forRoot({ load: [...] })` array (created in SI-03.1 but not registered yet, same pattern as `storageConfig` was wired in SI-03.3) so `@Inject(queueConfig.KEY)` resolves anywhere in the API process.
+  - `QueueModule` imports both `BullModule.forRootAsync` (Redis connection, sourced from `queueConfig`) and `BullModule.registerQueue({ name: 'video-processing' })`, and provides/exports `VideoQueueService` — no dependency on `VideosModule` or a future `WorkerModule`, so it compiles standalone per the plan's Acceptance criteria.
+  - `video-queue.service.spec.ts` mocks the injected `bullmq` `Queue` directly (constructing `VideoQueueService` with a plain mock object, following the existing `channels.service.spec.ts` convention of direct instantiation over a full `Test.createTestingModule`) rather than spinning up a real BullMQ/Redis connection — keeps this a true unit test.
+  - `queue.module.spec.ts` mirrors `storage.module.spec.ts`'s standalone-compile pattern: `Test.createTestingModule({ imports: [ConfigModule.forRoot({ isGlobal: true, load: [queueConfig] }), QueueModule] }).compile()`, then asserts `VideoQueueService` resolves. This actually opens a real connection to the shared dev Redis container (via `queueConfig`'s `REDIS_HOST=redis`/`REDIS_PORT=6379` defaults), consistent with how `StorageModule`'s spec exercises a real MinIO/S3 client rather than mocking the transport.
+  - `npx tsc --noEmit`: clean, 0 errors. `npx eslint "src/queue/**/*.ts" "src/app.module.ts"`: clean, 0 errors/warnings — initial mocked-`Queue`-as-`any` draft in the unit spec tripped `@typescript-eslint/no-unsafe-*` rules (a pattern that already exists uncorrected elsewhere in the codebase, e.g. `channels.service.spec.ts`), fixed by typing the mock as `{ add: jest.Mock } & Queue` via `as unknown as` instead of a bare `any` return type; also fixed one `prettier/prettier` line-wrap in the service constructor.
+  - Full suite: **166/166 passing, 30/30 suites — fully green** (baseline 163/28 + this SI's 3 tests/2 suites, zero regressions, zero pre-existing failures remaining).

@@ -476,22 +476,23 @@ Linearized implementation order: SI-03.1 → SI-03.2, SI-03.3, SI-03.4 (parallel
 
 ## Deliverables
 
-- [ ] SI-03.1 — Dependencies, Configuration Namespaces, and Docker Compose
-- [ ] SI-03.2 — Video Entity and Migration
-- [ ] SI-03.3 — Storage Module (Dual S3 Clients, Presigned Operations, Bucket Bootstrap)
-- [ ] SI-03.4 — Queue Module (BullMQ Registration and Producer)
-- [ ] SI-03.5 — Upload Initiation Endpoint (POST /videos)
-- [ ] SI-03.6 — Complete Upload Endpoint (POST /videos/:id/complete-upload)
-- [ ] SI-03.7 — Standalone Worker Application Bootstrap
-- [ ] SI-03.8 — Video Processing Job Handler (ffprobe/ffmpeg, Status Transitions, Retry)
-- [ ] SI-03.9 — Streaming Endpoint (GET /videos/:id/stream)
-- [ ] SI-03.10 — Download Endpoint (GET /videos/:id/download)
+- [x] SI-03.1 — Dependencies, Configuration Namespaces, and Docker Compose
+- [x] SI-03.2 — Video Entity and Migration
+- [x] SI-03.3 — Storage Module (Dual S3 Clients, Presigned Operations, Bucket Bootstrap)
+- [x] SI-03.4 — Queue Module (BullMQ Registration and Producer)
+- [x] SI-03.5 — Upload Initiation Endpoint (POST /videos)
+- [x] SI-03.6 — Complete Upload Endpoint (POST /videos/:id/complete-upload)
+- [x] SI-03.7 — Standalone Worker Application Bootstrap
+- [x] SI-03.8 — Video Processing Job Handler (ffprobe/ffmpeg, Status Transitions, Retry)
+- [x] SI-03.9 — Streaming Endpoint (GET /videos/:id/stream)
+- [x] SI-03.10 — Download Endpoint (GET /videos/:id/download)
 
 **Full test suites:**
 
-- [ ] All SI tests pass (`docker compose exec nestjs-api npm test -- --runInBand`)
-- [ ] E2E tests pass (`docker compose exec nestjs-api npm run test:e2e`)
-- [ ] Type/compilation check passes (`docker compose exec nestjs-api npx tsc --noEmit`)
-- [ ] Project builds successfully (`docker compose exec nestjs-api npm run build`)
-- [ ] `docker compose up video-worker` starts without a bound HTTP port; `ffmpeg -version` / `ffprobe -version` both succeed inside the container
-- [ ] `minio` console reachable at `localhost:9001`; `redis` responds to `redis-cli ping` inside the Docker network
+- [x] All SI tests pass (`docker compose exec video-worker npm test -- --runInBand` — 209/209, 35/35 suites; run via `video-worker` not `nestjs-api` since ffmpeg/ffprobe only exist there)
+- [x] E2E tests pass (`docker compose exec nestjs-api npm run test:e2e` — 63/63, 4/4 suites)
+- [x] Type/compilation check passes (`docker compose exec nestjs-api npx tsc --noEmit` — clean, 0 errors)
+- [x] Project builds successfully (`docker compose exec nestjs-api npm run build` — clean)
+- [x] `docker compose up video-worker` starts without a bound HTTP port; `ffmpeg -version` / `ffprobe -version` both succeed inside the container
+- [x] `minio` console reachable at `localhost:9001`; `redis` responds to `redis-cli ping` inside the Docker network
+- [x] `npm run lint` passes — 0 errors, 23 warnings (all pre-existing `no-unsafe-argument` in phase-02 `auth.service` tests, a rule the project's own `eslint.config.mjs` deliberately sets to `warn`, not `error`)

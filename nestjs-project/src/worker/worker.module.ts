@@ -10,6 +10,7 @@ import storageConfig from '../config/storage.config';
 import { User } from '../users/entities/user.entity';
 import { Video } from '../videos/entities/video.entity';
 import { StorageModule } from '../storage/storage.module';
+import { VideoProcessor } from './video.processor';
 
 @Module({
   imports: [
@@ -43,5 +44,6 @@ import { StorageModule } from '../storage/storage.module';
     }),
     BullModule.registerQueue({ name: 'video-processing' }),
   ],
+  providers: [VideoProcessor],
 })
 export class WorkerModule {}

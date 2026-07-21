@@ -252,4 +252,121 @@ describe('Videos (e2e)', () => {
       expect(res.body.error).toBe('VIDEO_NOT_FOUND');
     });
   });
+
+  describe('GET /videos/:id/stream and GET /videos/:id/download', () => {
+    async function setVideoStatus(id: string, status: string): Promise<void> {
+      await dataSource.query('UPDATE "videos" SET status = $1 WHERE id = $2', [
+        status,
+        id,
+      ]);
+    }
+
+    // A single test drives the whole draft -> processing -> error -> ready
+    // lifecycle for one video (rather than one `it` + one
+    // registerConfirmAndLogin() per scenario) to stay well under the app's
+    // global ThrottlerGuard (10 req/60s per IP+route, see auth.module.ts) —
+    // this file already burns 9 registrations across the describes above,
+    // leaving very little headroom.
+    it('gates both endpoints on status=ready and differs only in response-content-disposition', async () => {
+      const accessToken = await registerConfirmAndLogin();
+      const originalFilename = 'my-video.mp4';
+      const createRes = await request(app.getHttpServer())
+        .post('/videos')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({ originalFilename, fileSize: 1024 })
+        .expect(201);
+      const id = createRes.body.id as string;
+      const storageKey = `videos/${id}/original`;
+
+      // status=draft (initial) -> 404 on both, no Authorization needed.
+      const draftStream = await request(app.getHttpServer())
+        .get(`/videos/${id}/stream`)
+        .expect(404);
+      expect(draftStream.body.error).toBe('VIDEO_NOT_FOUND');
+      const draftDownload = await request(app.getHttpServer())
+        .get(`/videos/${id}/download`)
+        .expect(404);
+      expect(draftDownload.body.error).toBe('VIDEO_NOT_FOUND');
+
+      // status=processing -> 404 on both.
+      await setVideoStatus(id, 'processing');
+      const processingStream = await request(app.getHttpServer())
+        .get(`/videos/${id}/stream`)
+        .expect(404);
+      expect(processingStream.body.error).toBe('VIDEO_NOT_FOUND');
+      const processingDownload = await request(app.getHttpServer())
+        .get(`/videos/${id}/download`)
+        .expect(404);
+      expect(processingDownload.body.error).toBe('VIDEO_NOT_FOUND');
+
+      // status=error -> 404 on both.
+      await setVideoStatus(id, 'error');
+      const errorStream = await request(app.getHttpServer())
+        .get(`/videos/${id}/stream`)
+        .expect(404);
+      expect(errorStream.body.error).toBe('VIDEO_NOT_FOUND');
+      const errorDownload = await request(app.getHttpServer())
+        .get(`/videos/${id}/download`)
+        .expect(404);
+      expect(errorDownload.body.error).toBe('VIDEO_NOT_FOUND');
+
+      // unknown id -> 404 on both, indistinguishable from non-ready.
+      const unknownId = '00000000-0000-0000-0000-000000000000';
+      const unknownStream = await request(app.getHttpServer())
+        .get(`/videos/${unknownId}/stream`)
+        .expect(404);
+      expect(unknownStream.body.error).toBe('VIDEO_NOT_FOUND');
+      const unknownDownload = await request(app.getHttpServer())
+        .get(`/videos/${unknownId}/download`)
+        .expect(404);
+      expect(unknownDownload.body.error).toBe('VIDEO_NOT_FOUND');
+
+      // status=ready -> 200 on both. Bypasses the real ffmpeg worker
+      // pipeline (not available in this container) — inserts a real
+      // small object into MinIO directly via StorageService and flips
+      // the row to status='ready' with a raw query. These two endpoints
+      // only care about the video's `status` and `storageKey`, not that
+      // a worker actually processed it.
+      const storageService = app.get(StorageService);
+      await storageService.putObject(storageKey, Buffer.from('real content'));
+      await setVideoStatus(id, 'ready');
+
+      const streamRes = await request(app.getHttpServer())
+        .get(`/videos/${id}/stream`)
+        .expect(200);
+      expect(streamRes.body.url).toEqual(expect.any(String));
+
+      const downloadRes = await request(app.getHttpServer())
+        .get(`/videos/${id}/download`)
+        .expect(200);
+      expect(downloadRes.body.url).toEqual(expect.any(String));
+
+      const streamUrl = new URL(streamRes.body.url as string);
+      const downloadUrl = new URL(downloadRes.body.url as string);
+
+      expect(streamUrl.pathname).toContain(storageKey);
+      expect(streamUrl.pathname).toBe(downloadUrl.pathname);
+      expect(
+        streamUrl.searchParams.get('response-content-disposition'),
+      ).toBeNull();
+      expect(downloadUrl.searchParams.get('response-content-disposition')).toBe(
+        `attachment; filename="${originalFilename}"`,
+      );
+
+      // Strip the params that legitimately differ per-call (signature
+      // depends on the exact param set being signed; date can tick
+      // across the two requests) and confirm every other query param —
+      // i.e. everything about which object/bucket/expiry is targeted —
+      // is identical between the two URLs.
+      const normalize = (url: URL): string => {
+        const params = new URLSearchParams(url.searchParams);
+        params.delete('response-content-disposition');
+        params.delete('X-Amz-Signature');
+        params.delete('X-Amz-Date');
+        params.sort();
+        return params.toString();
+      };
+      expect(normalize(streamUrl)).toBe(normalize(downloadUrl));
+    }, 20000);
+  });
 });

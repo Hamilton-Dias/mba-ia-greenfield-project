@@ -57,6 +57,7 @@ interface Setup {
   presignUploadPartMock: jest.Mock;
   completeMultipartUploadMock: jest.Mock;
   headObjectMock: jest.Mock;
+  presignGetObjectMock: jest.Mock;
   enqueueProcessingMock: jest.Mock;
 }
 
@@ -69,6 +70,7 @@ function setup(
     presignUploadPartMock?: jest.Mock;
     completeMultipartUploadMock?: jest.Mock;
     headObjectMock?: jest.Mock;
+    presignGetObjectMock?: jest.Mock;
   } = {},
 ): Setup {
   const createMock = jest.fn((data: Partial<Video>) => data as Video);
@@ -98,12 +100,16 @@ function setup(
     jest.fn().mockResolvedValue(undefined);
   const headObjectMock =
     options.headObjectMock ?? jest.fn().mockResolvedValue({});
+  const presignGetObjectMock =
+    options.presignGetObjectMock ??
+    jest.fn().mockResolvedValue('https://signed-get-url');
   const storageService = {
     presignPutObject: presignPutObjectMock,
     createMultipartUpload: createMultipartUploadMock,
     presignUploadPart: presignUploadPartMock,
     completeMultipartUpload: completeMultipartUploadMock,
     headObject: headObjectMock,
+    presignGetObject: presignGetObjectMock,
   } as unknown as StorageService;
 
   const enqueueProcessingMock = jest.fn().mockResolvedValue(undefined);
@@ -129,6 +135,7 @@ function setup(
     presignUploadPartMock,
     completeMultipartUploadMock,
     headObjectMock,
+    presignGetObjectMock,
     enqueueProcessingMock,
   };
 }
@@ -334,6 +341,84 @@ describe('VideosService', () => {
       await expect(
         service.completeUpload('user-id', 'video-id', makeCompleteUploadDto()),
       ).rejects.toThrow(unexpectedError);
+    });
+  });
+
+  describe('getStreamUrl', () => {
+    it('returns a presigned URL for a ready video', async () => {
+      const video = makeVideo({ status: VideoStatus.READY });
+      const presignGetObjectMock = jest
+        .fn()
+        .mockResolvedValue('https://signed-stream-url');
+      const { service } = setup({ video, presignGetObjectMock });
+
+      const result = await service.getStreamUrl('video-id');
+
+      expect(presignGetObjectMock).toHaveBeenCalledWith(
+        'videos/video-id/original',
+      );
+      expect(result).toEqual({ url: 'https://signed-stream-url' });
+    });
+
+    it.each([VideoStatus.DRAFT, VideoStatus.PROCESSING, VideoStatus.ERROR])(
+      'throws VideoNotFoundException when status is %s',
+      async (status) => {
+        const video = makeVideo({ status });
+        const { service } = setup({ video });
+
+        await expect(service.getStreamUrl('video-id')).rejects.toThrow(
+          VideoNotFoundException,
+        );
+      },
+    );
+
+    it('throws VideoNotFoundException when the video does not exist', async () => {
+      const { service } = setup({ video: null });
+
+      await expect(service.getStreamUrl('unknown-id')).rejects.toThrow(
+        VideoNotFoundException,
+      );
+    });
+  });
+
+  describe('getDownloadUrl', () => {
+    it('returns a presigned URL carrying the originalFilename for a ready video', async () => {
+      const video = makeVideo({
+        status: VideoStatus.READY,
+        originalFilename: 'my-video.mp4',
+      });
+      const presignGetObjectMock = jest
+        .fn()
+        .mockResolvedValue('https://signed-download-url');
+      const { service } = setup({ video, presignGetObjectMock });
+
+      const result = await service.getDownloadUrl('video-id');
+
+      expect(presignGetObjectMock).toHaveBeenCalledWith(
+        'videos/video-id/original',
+        { download: true, filename: 'my-video.mp4' },
+      );
+      expect(result).toEqual({ url: 'https://signed-download-url' });
+    });
+
+    it.each([VideoStatus.DRAFT, VideoStatus.PROCESSING, VideoStatus.ERROR])(
+      'throws VideoNotFoundException when status is %s',
+      async (status) => {
+        const video = makeVideo({ status });
+        const { service } = setup({ video });
+
+        await expect(service.getDownloadUrl('video-id')).rejects.toThrow(
+          VideoNotFoundException,
+        );
+      },
+    );
+
+    it('throws VideoNotFoundException when the video does not exist', async () => {
+      const { service } = setup({ video: null });
+
+      await expect(service.getDownloadUrl('unknown-id')).rejects.toThrow(
+        VideoNotFoundException,
+      );
     });
   });
 });

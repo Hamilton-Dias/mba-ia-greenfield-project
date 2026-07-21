@@ -150,6 +150,31 @@ export class VideosService {
     return { id: video.id, status: video.status };
   }
 
+  async getStreamUrl(videoId: string): Promise<{ url: string }> {
+    const video = await this.videoRepository.findOneBy({ id: videoId });
+
+    if (!video || video.status !== VideoStatus.READY) {
+      throw new VideoNotFoundException();
+    }
+
+    const url = await this.storageService.presignGetObject(video.storageKey);
+    return { url };
+  }
+
+  async getDownloadUrl(videoId: string): Promise<{ url: string }> {
+    const video = await this.videoRepository.findOneBy({ id: videoId });
+
+    if (!video || video.status !== VideoStatus.READY) {
+      throw new VideoNotFoundException();
+    }
+
+    const url = await this.storageService.presignGetObject(video.storageKey, {
+      download: true,
+      filename: video.originalFilename,
+    });
+    return { url };
+  }
+
   private isNotFoundError(err: unknown): boolean {
     const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
     return e?.name === 'NotFound' || e?.$metadata?.httpStatusCode === 404;

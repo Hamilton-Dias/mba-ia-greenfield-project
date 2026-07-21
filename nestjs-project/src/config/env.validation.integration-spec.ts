@@ -11,11 +11,24 @@ const requiredEnv = {
   STORAGE_SECRET_KEY: 'secret-key',
 };
 
-const validate = (env: Record<string, string>) =>
+interface ValidatedEnv {
+  SWAGGER_ENABLED: string;
+}
+
+// Joi's own `ValidationResult<TSchema>` types `value` as `any` on the
+// error branch of its union, which collapses the whole property to `any`
+// regardless of the generic passed in. Assert our own narrower shape
+// instead of relying on that library type.
+interface ValidateOutcome {
+  error?: { message: string };
+  value: ValidatedEnv;
+}
+
+const validate = (env: Record<string, string>): ValidateOutcome =>
   envValidationSchema.validate(
     { ...requiredEnv, ...env },
     { allowUnknown: true, abortEarly: false },
-  );
+  ) as unknown as ValidateOutcome;
 
 describe('envValidationSchema — SWAGGER_ENABLED', () => {
   it('should reject SWAGGER_ENABLED with an invalid value', () => {

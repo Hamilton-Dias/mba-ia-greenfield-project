@@ -7,8 +7,36 @@ import { AppModule } from '../src/app.module';
 import { AuthService } from '../src/auth/auth.service';
 import { DomainExceptionFilter } from '../src/common/filters/domain-exception.filter';
 import { ValidationExceptionFilter } from '../src/common/filters/validation-exception.filter';
+import { MailService } from '../src/mail/mail.service';
 import { StorageService } from '../src/storage/storage.service';
 import { cleanAllTables } from '../src/test/create-test-data-source';
+
+interface ErrorResponse {
+  statusCode: number;
+  error: string;
+  message: string | string[];
+}
+
+interface AuthTokenResponse {
+  access_token: string;
+}
+
+interface UploadHandshake {
+  type: string;
+  url?: string;
+  uploadId?: string;
+  parts?: { partNumber: number; url: string }[];
+}
+
+interface VideoResponse {
+  id: string;
+  status: string;
+  upload: UploadHandshake;
+}
+
+interface StreamUrlResponse {
+  url: string;
+}
 
 describe('Videos (e2e)', () => {
   let app: INestApplication<App>;
@@ -58,12 +86,15 @@ describe('Videos (e2e)', () => {
     password = 'password123',
   ): Promise<string> {
     const authService = app.get(AuthService);
-    const mailServiceInstance = (authService as any).mailService;
+    const mailServiceInstance = (
+      authService as unknown as { mailService: MailService }
+    ).mailService;
     let capturedToken = '';
     jest
       .spyOn(mailServiceInstance, 'sendConfirmationEmail')
-      .mockImplementationOnce(async (_e: string, _n: string, t: string) => {
+      .mockImplementationOnce((_e: string, _n: string, t: string) => {
         capturedToken = t;
+        return Promise.resolve();
       });
     await request(app.getHttpServer())
       .post('/auth/register')
@@ -81,7 +112,7 @@ describe('Videos (e2e)', () => {
     const res = await request(app.getHttpServer())
       .post('/auth/login')
       .send({ email, password });
-    return res.body.access_token as string;
+    return (res.body as AuthTokenResponse).access_token;
   }
 
   describe('POST /videos', () => {
@@ -94,11 +125,12 @@ describe('Videos (e2e)', () => {
         .send({ originalFilename: 'my-video.mp4', fileSize: 1024 })
         .expect(201);
 
-      expect(res.body.id).toBeDefined();
-      expect(res.body.status).toBe('draft');
-      expect(res.body.upload).toBeDefined();
-      expect(res.body.upload.type).toBe('single');
-      expect(res.body.upload.url).toEqual(expect.any(String));
+      const body = res.body as VideoResponse;
+      expect(body.id).toBeDefined();
+      expect(body.status).toBe('draft');
+      expect(body.upload).toBeDefined();
+      expect(body.upload.type).toBe('single');
+      expect(body.upload.url).toEqual(expect.any(String));
     });
 
     it('returns 401 without an Authorization header', async () => {
@@ -117,8 +149,9 @@ describe('Videos (e2e)', () => {
         .send({ originalFilename: 'my-video.mp4', fileSize: 104857600 })
         .expect(201);
 
-      expect(res.body.upload.type).toBe('single');
-      expect(res.body.upload.url).toEqual(expect.any(String));
+      const body = res.body as VideoResponse;
+      expect(body.upload.type).toBe('single');
+      expect(body.upload.url).toEqual(expect.any(String));
     });
 
     it('returns a multipart upload handshake when fileSize exceeds the 100MB threshold', async () => {
@@ -130,13 +163,14 @@ describe('Videos (e2e)', () => {
         .send({ originalFilename: 'big-video.mp4', fileSize: 104857601 })
         .expect(201);
 
-      expect(res.body.upload.type).toBe('multipart');
-      expect(res.body.upload.uploadId).toEqual(expect.any(String));
-      expect(Array.isArray(res.body.upload.parts)).toBe(true);
-      expect(res.body.upload.parts.length).toBeGreaterThan(0);
-      expect(res.body.upload.parts[0]).toEqual({
+      const body = res.body as VideoResponse;
+      expect(body.upload.type).toBe('multipart');
+      expect(body.upload.uploadId).toEqual(expect.any(String));
+      expect(Array.isArray(body.upload.parts)).toBe(true);
+      expect(body.upload.parts!.length).toBeGreaterThan(0);
+      expect(body.upload.parts![0]).toEqual({
         partNumber: 1,
-        url: expect.any(String),
+        url: expect.any(String) as unknown,
       });
     }, 15000);
 
@@ -149,7 +183,7 @@ describe('Videos (e2e)', () => {
         .send({ originalFilename: 'huge-video.mp4', fileSize: 10737418241 })
         .expect(400);
 
-      expect(res.body.error).toBe('VALIDATION_ERROR');
+      expect((res.body as ErrorResponse).error).toBe('VALIDATION_ERROR');
     });
 
     it('returns 400 when originalFilename is missing', async () => {
@@ -161,7 +195,7 @@ describe('Videos (e2e)', () => {
         .send({ fileSize: 1024 })
         .expect(400);
 
-      expect(res.body.error).toBe('VALIDATION_ERROR');
+      expect((res.body as ErrorResponse).error).toBe('VALIDATION_ERROR');
     });
 
     it('returns 400 when fileSize is missing', async () => {
@@ -173,7 +207,7 @@ describe('Videos (e2e)', () => {
         .send({ originalFilename: 'my-video.mp4' })
         .expect(400);
 
-      expect(res.body.error).toBe('VALIDATION_ERROR');
+      expect((res.body as ErrorResponse).error).toBe('VALIDATION_ERROR');
     });
   });
 
@@ -187,7 +221,7 @@ describe('Videos (e2e)', () => {
         .set('Authorization', `Bearer ${accessToken}`)
         .send({ originalFilename: 'my-video.mp4', fileSize })
         .expect(201);
-      const id = res.body.id as string;
+      const id = (res.body as VideoResponse).id;
       return { id, storageKey: `videos/${id}/original` };
     }
 
@@ -218,7 +252,7 @@ describe('Videos (e2e)', () => {
         .set('Authorization', `Bearer ${accessToken}`)
         .send({})
         .expect(404);
-      expect(notFoundRes.body.error).toBe('VIDEO_NOT_FOUND');
+      expect((notFoundRes.body as ErrorResponse).error).toBe('VIDEO_NOT_FOUND');
 
       // 409: a fresh draft whose storage object was never actually uploaded.
       const { id: neverUploadedId } = await createDraftVideo(accessToken);
@@ -227,7 +261,9 @@ describe('Videos (e2e)', () => {
         .set('Authorization', `Bearer ${accessToken}`)
         .send({})
         .expect(409);
-      expect(verificationRes.body.error).toBe('UPLOAD_VERIFICATION_FAILED');
+      expect((verificationRes.body as ErrorResponse).error).toBe(
+        'UPLOAD_VERIFICATION_FAILED',
+      );
     }, 20000);
 
     it('returns 401 without an Authorization header', async () => {
@@ -249,7 +285,7 @@ describe('Videos (e2e)', () => {
         .send({})
         .expect(404);
 
-      expect(res.body.error).toBe('VIDEO_NOT_FOUND');
+      expect((res.body as ErrorResponse).error).toBe('VIDEO_NOT_FOUND');
     });
   });
 
@@ -275,51 +311,63 @@ describe('Videos (e2e)', () => {
         .set('Authorization', `Bearer ${accessToken}`)
         .send({ originalFilename, fileSize: 1024 })
         .expect(201);
-      const id = createRes.body.id as string;
+      const id = (createRes.body as VideoResponse).id;
       const storageKey = `videos/${id}/original`;
 
       // status=draft (initial) -> 404 on both, no Authorization needed.
       const draftStream = await request(app.getHttpServer())
         .get(`/videos/${id}/stream`)
         .expect(404);
-      expect(draftStream.body.error).toBe('VIDEO_NOT_FOUND');
+      expect((draftStream.body as ErrorResponse).error).toBe('VIDEO_NOT_FOUND');
       const draftDownload = await request(app.getHttpServer())
         .get(`/videos/${id}/download`)
         .expect(404);
-      expect(draftDownload.body.error).toBe('VIDEO_NOT_FOUND');
+      expect((draftDownload.body as ErrorResponse).error).toBe(
+        'VIDEO_NOT_FOUND',
+      );
 
       // status=processing -> 404 on both.
       await setVideoStatus(id, 'processing');
       const processingStream = await request(app.getHttpServer())
         .get(`/videos/${id}/stream`)
         .expect(404);
-      expect(processingStream.body.error).toBe('VIDEO_NOT_FOUND');
+      expect((processingStream.body as ErrorResponse).error).toBe(
+        'VIDEO_NOT_FOUND',
+      );
       const processingDownload = await request(app.getHttpServer())
         .get(`/videos/${id}/download`)
         .expect(404);
-      expect(processingDownload.body.error).toBe('VIDEO_NOT_FOUND');
+      expect((processingDownload.body as ErrorResponse).error).toBe(
+        'VIDEO_NOT_FOUND',
+      );
 
       // status=error -> 404 on both.
       await setVideoStatus(id, 'error');
       const errorStream = await request(app.getHttpServer())
         .get(`/videos/${id}/stream`)
         .expect(404);
-      expect(errorStream.body.error).toBe('VIDEO_NOT_FOUND');
+      expect((errorStream.body as ErrorResponse).error).toBe('VIDEO_NOT_FOUND');
       const errorDownload = await request(app.getHttpServer())
         .get(`/videos/${id}/download`)
         .expect(404);
-      expect(errorDownload.body.error).toBe('VIDEO_NOT_FOUND');
+      expect((errorDownload.body as ErrorResponse).error).toBe(
+        'VIDEO_NOT_FOUND',
+      );
 
       // unknown id -> 404 on both, indistinguishable from non-ready.
       const unknownId = '00000000-0000-0000-0000-000000000000';
       const unknownStream = await request(app.getHttpServer())
         .get(`/videos/${unknownId}/stream`)
         .expect(404);
-      expect(unknownStream.body.error).toBe('VIDEO_NOT_FOUND');
+      expect((unknownStream.body as ErrorResponse).error).toBe(
+        'VIDEO_NOT_FOUND',
+      );
       const unknownDownload = await request(app.getHttpServer())
         .get(`/videos/${unknownId}/download`)
         .expect(404);
-      expect(unknownDownload.body.error).toBe('VIDEO_NOT_FOUND');
+      expect((unknownDownload.body as ErrorResponse).error).toBe(
+        'VIDEO_NOT_FOUND',
+      );
 
       // status=ready -> 200 on both. Bypasses the real ffmpeg worker
       // pipeline (not available in this container) — inserts a real
@@ -334,15 +382,17 @@ describe('Videos (e2e)', () => {
       const streamRes = await request(app.getHttpServer())
         .get(`/videos/${id}/stream`)
         .expect(200);
-      expect(streamRes.body.url).toEqual(expect.any(String));
+      const streamBody = streamRes.body as StreamUrlResponse;
+      expect(streamBody.url).toEqual(expect.any(String));
 
       const downloadRes = await request(app.getHttpServer())
         .get(`/videos/${id}/download`)
         .expect(200);
-      expect(downloadRes.body.url).toEqual(expect.any(String));
+      const downloadBody = downloadRes.body as StreamUrlResponse;
+      expect(downloadBody.url).toEqual(expect.any(String));
 
-      const streamUrl = new URL(streamRes.body.url as string);
-      const downloadUrl = new URL(downloadRes.body.url as string);
+      const streamUrl = new URL(streamBody.url);
+      const downloadUrl = new URL(downloadBody.url);
 
       expect(streamUrl.pathname).toContain(storageKey);
       expect(streamUrl.pathname).toBe(downloadUrl.pathname);

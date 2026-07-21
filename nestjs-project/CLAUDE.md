@@ -159,3 +159,52 @@ NestJS with standard module structure. Source lives in `src/`, compiled output i
 ## REST Conventions
 
 This is a RESTful API. All endpoints must follow standard REST conventions — correct HTTP methods, proper status codes, plural resource nouns, and consistent URL structure. Details are enforced via rules on controller files.
+
+## Videos Module (Fase 03)
+
+Upload, background processing, and delivery of videos. Decisions in `docs/decisions/technical-decisions-phase-03-videos.md`, plan in `docs/phases/phase-03-videos/phase-03-videos.md`.
+
+### Services added to `compose.yaml`
+
+- `redis` (`redis:7-alpine`, port `6379`) — BullMQ connection.
+- `minio` (`minio/minio`, ports `9000` API / `9001` console) — S3-compatible object storage, local dev implementation of the architecture's "Object Storage" container. Credentials via `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`.
+- `video-worker` — standalone NestJS application (`src/worker/`), built from `Dockerfile.worker` (same base as `Dockerfile.dev` plus `ffmpeg`). Runs `NestFactory.createApplicationContext()` — **no HTTP server, no bound port**. Consumes the `video-processing` BullMQ queue and does the actual media processing.
+
+**`ffmpeg`/`ffprobe` are only installed in the `video-worker` container, not `nestjs-api`.** Both containers share the same bind-mounted source and `.env`. Any test that exercises real ffmpeg/ffprobe (currently `src/worker/video.processor.integration-spec.ts`) must run via `docker compose exec video-worker npm test ...`, not `nestjs-api`. All other tests run from either container interchangeably.
+
+### Object storage (`src/storage/`)
+
+`StorageService` wraps two S3 clients against MinIO:
+- **Admin client** (`STORAGE_INTERNAL_ENDPOINT`, e.g. `http://minio:9000`) — used for bucket bootstrap (`ensureBucketExists`, idempotent `HeadBucket`/`CreateBucket` on module init), multipart orchestration, `headObject`, and the worker's own reads/writes. Only this endpoint is needed by the worker process — it never issues presigned URLs.
+- **Presigning client** (`STORAGE_PUBLIC_ENDPOINT`, e.g. `http://localhost:9000`), constructed lazily on first use — used only when signing a URL an external client (browser, test script) will call directly. Kept separate from the admin endpoint because a URL signed against the internal Docker-network hostname (`minio:9000`) is not resolvable outside the Compose network. Only the API process needs this env var; it's optional so the worker can omit it.
+
+Bucket/key layout: single bucket (`STORAGE_BUCKET`, default `streamtube`), per-video prefix — `videos/{videoId}/original` and `videos/{videoId}/thumbnail.jpg`.
+
+### Queue (`src/queue/`)
+
+`QueueModule` registers a single BullMQ queue, `video-processing`, connected to `redis`. `VideoQueueService.enqueueProcessing(videoId)` adds a `process-video` job (`{ videoId }` payload) with `attempts: 3` and exponential backoff. The API process registers this queue as a producer; the worker registers the same queue name as a consumer with its own connection — they don't share a NestJS module tree.
+
+### Video entity and status lifecycle (`src/videos/entities/video.entity.ts`)
+
+`videos` table: `id` (uuid, also the public identifier — no separate slug), `channelId` (FK → `channels.id`, resolved server-side from the authenticated user's own 1:1 channel — **never accepted from the client**, closing the ownership/IDOR surface by construction), `originalFilename`, `storageKey`, `status` (enum: `draft` → `processing` → `ready` | `error`), `duration`, `thumbnailKey`, `error_message`.
+
+- **draft → processing**: client finishes uploading directly to storage, then calls `POST /videos/:id/complete-upload`. Multipart uploads complete server-side via `CompleteMultipartUploadCommand` (success is itself the existence proof); single-PUT uploads are verified via `HeadObject` (404 `VIDEO_NOT_FOUND` on ownership mismatch/unknown id, 409 `UPLOAD_VERIFICATION_FAILED` if the object was never actually uploaded).
+- **processing → ready**: `VideoProcessor` (`src/worker/video.processor.ts`, `@Processor('video-processing')`) downloads the original, runs `ffprobe` for duration and `ffmpeg` for a thumbnail (fixed 3s offset, clamped to 0s for clips shorter than 3s — `src/worker/thumbnail-offset.util.ts`), then writes `status`, `duration`, and `thumbnailKey` in one atomic update.
+- **processing → error**: any ffprobe/ffmpeg/storage exception writes `status='error'` + `error_message` in one atomic update, then re-throws so BullMQ's retry/backoff governs re-attempts; after 3 attempts the video stays in `error` permanently (no automatic further retry).
+- **Streaming/download gate**: `GET /videos/:id/stream` and `GET /videos/:id/download` only succeed when `status === 'ready'` — any other status (including unknown id) returns a uniform 404 `VIDEO_NOT_FOUND`, never exposing a draft/processing/broken file.
+
+### Endpoints (`src/videos/videos.controller.ts`, prefix `videos`)
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `POST` | `/videos` | JWT required | Pre-register a draft; returns a presigned single-PUT URL (≤100MB) or a multipart handshake (`uploadId` + per-part presigned URLs, >100MB, 50MB parts) — 10GB cap enforced by DTO validation. |
+| `POST` | `/videos/:id/complete-upload` | JWT required | Verifies the upload landed in storage, flips `draft` → `processing`, enqueues the processing job. |
+| `GET` | `/videos/:id/stream` | Public | Presigned GET URL for inline playback (no `Content-Disposition` override), `status='ready'` only. |
+| `GET` | `/videos/:id/download` | Public | Presigned GET URL with `ResponseContentDisposition: attachment; filename="<originalFilename>"`, `status='ready'` only. Same underlying object/mechanism as streaming. |
+
+Upload bytes never pass through the API or worker process for the initiate/complete flow — the client talks to MinIO/S3 directly via the presigned URLs, matching the architecture diagram's `Rel(frontend, storage, "Streams")`.
+
+### Test environment notes specific to this module
+
+- `NODE_OPTIONS=--experimental-vm-modules` is set on every jest-invoking `npm` script (`test`, `test:e2e`, etc.) — required because `execa` (used by the worker to spawn `ffmpeg`/`ffprobe`) is ESM-only and is loaded via dynamic `import('execa')` from this project's CommonJS codebase; Jest's VM sandbox needs this flag to allow dynamic `import()` at all.
+- Integration tests for storage/queue/worker exercise the real `minio`/`redis` services — no mocking of the transport layer, consistent with this project's existing "real DB, no ORM mocks" integration-test convention.
